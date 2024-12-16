@@ -1,0 +1,599 @@
+<?php
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\webform\Plugin\WebformHandlerBase;
+use Drupal\webform\webformSubmissionInterface;
+use Drupal\Core\Site\Settings;
+use Drupal\Core\Routing\TrustedRedirectResponse; 
+
+define('webform_to_salesforce_example_CACHE_DURATION', 1800);
+/**
+ * Implements hook_form_alter().
+ */
+function webform_to_salesforce_example_form_alter(&$form, FormStateInterface $form_state, $form_id) {
+  if ($form['#form_id'] == 'webform_submission_charity_campaign_form_node_96026_add_form') {
+    foreach (array_keys($form['actions']) as $action) {
+      if ($action != 'preview' && isset($form['actions'][$action]['#type']) && $form['actions'][$action]['#type'] === 'submit') {
+        $form['actions'][$action]['#validate'][] = 'webform_to_salesforce_example_form_validate';
+        $form['actions'][$action]['#submit'][] = 'webform_to_salesforce_example_form_submit';
+      }
+    }
+  }
+
+  if ($form['#form_id'] == 'webform_submission_associate_order_set_up_node_139486_add_form') {
+    foreach (array_keys($form['actions']) as $action) {
+        if ($action != 'preview' && isset($form['actions'][$action]['#type']) && $form['actions'][$action]['#type'] === 'submit') {
+          $form['actions'][$action]['#validate'][] = 'webform_to_salesforce_example_associated_order_setup_validate';
+          $form['actions'][$action]['#submit'][] = 'webform_to_salesforce_example_associated_order_setup_submit';
+        }
+     }
+      
+  }
+
+  if ($form['#form_id'] == 'webform_submission_retiree_remote_associate_order_s_node_139491_add_form') {
+    foreach (array_keys($form['actions']) as $action) {
+      if ($action != 'preview' && isset($form['actions'][$action]['#type']) && $form['actions'][$action]['#type'] === 'submit') {
+        $form['actions'][$action]['#submit'][] = 'webform_to_salesforce_example_retiree_order_setup_submit';
+      }
+    }
+
+  }
+}
+
+/**
+ * Adds hook_form_validate.
+ */
+function webform_to_salesforce_example_form_validate(array $form, FormStateInterface $form_state) {
+  $webform_to_salesforce_example_associate_location = $form_state->getValue('location');
+  $webform_to_salesforce_example_functional_area_team = $form_state->getValue('functional_area');
+  if ($webform_to_salesforce_example_associate_location == 'None') {
+    $form_state->setErrorByName('location', $this->t('You must select an Associate Location.'));
+  }
+  if ($webform_to_salesforce_example_functional_area_team == 'None') {
+    form_set_error('functional_area', t('You must select a Functional Area Team.'));
+  }
+}
+
+function webform_to_salesforce_example_form_submit(array $form, FormStateInterface $form_state){
+  $access_info = webform_to_salesforce_example_cache();
+  $_webform_to_salesforce_example_salesforce_access_token = $access_info['access_token'];
+  $_webform_to_salesforce_example_salesforce_instance_url = $access_info['instance_url'];
+  $donation_type = '';
+  if ($form_state->getValue('donation_type')) {
+    switch ($form_state->getValue('donation_type')) {
+      case 'periodic':
+        $donation_type = 'Payroll Deduction Recurring';
+        break;
+
+      case 'onetimepayroll':
+        $donation_type = 'Payroll Deduction One Time';
+        break;
+
+      case 'check':
+        $donation_type = 'One Time Check';
+        break;
+
+      case 'onetimecredit':
+        $donation_type = 'One Time Credit Card via PayPal';
+        break;
+    }
+  }
+
+  // Submit donation information to Salesforce.
+  $url = "$_webform_to_salesforce_example_salesforce_instance_url/services/data/v55.0/sobjects/charitycampaignDonation__c";
+  $_webform_to_salesforce_example_salesforce_instance_host_url = parse_url($_webform_to_salesforce_example_salesforce_instance_url);
+  $_webform_to_salesforce_example_salesforce_instance_host_name = $_webform_to_salesforce_example_salesforce_instance_host_url['host'];
+
+  if ($form_state->getValue('preferred_charity') == 'None') {
+    $preferred_charity = 'Charity Campaign Greater Houston General Fund';
+  }else{
+    $preferred_charity = $form_state->getValue('preferred_charity'); 
+  }
+  $user = \Drupal::currentUser();
+  $user_email = $user->getEmail();
+
+  $content = json_encode(
+    array(
+      'Associate_Network_Id__c' => $form_state->getValue('network_id'),
+      'Associate_Name_Intranet__c' => $form_state->getValue('associate_name'),
+      'Amount__c' => $form_state->getValue('amount'),
+      'Location__c' => $form_state->getValue('location'),
+      'Functional_Area__c' =>$form_state->getValue('functional_area'),
+      'Preferred_Charity__c' => $preferred_charity,
+      'Donation_Type__c' => $donation_type,
+      'Give_To_charity_campaign__c' => $form_state->getValue('give_to_charity_campaign'),
+      'Associate_Email_Address__c' => $user_email,
+    )
+  );
+
+  \Drupal::logger(' webform_to_salesforce_example_charitycampaign')->notice($_webform_to_salesforce_example_salesforce_access_token.' == mymodule submit =='.$content) ;
+  $curl = curl_init($url);
+  curl_setopt($curl, CURLOPT_HEADER, FALSE);
+  curl_setopt($curl, CURLOPT_RETURNTRANSFER, TRUE);
+  curl_setopt($curl, CURLOPT_HTTPHEADER,
+    array("Authorization: OAuth $_webform_to_salesforce_example_salesforce_access_token",
+      "Content-type: application/json",
+    )
+  );
+  curl_setopt($curl, CURLOPT_POST, TRUE);
+  curl_setopt($curl, CURLOPT_POSTFIELDS, $content);
+
+  $json_response = curl_exec($curl);
+
+  $status = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+
+  //echo "HTTP status $status creating donation<br/><br/>";
+
+  curl_close($curl);
+
+  $response = json_decode($json_response, TRUE);
+  $charity_campaign_id = $response['id'];
+
+  if ($status == 201) {
+    \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->notice("SUCCESS! Charity Campaign form submitted with response: $json_response.") ;
+  }
+  else {
+    //echo "FAILED! HTTP status $status creating donation. Salesforce response was $json_response.";
+    \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->notice("FAILURE ON SUBMISSION! Charity Campaign form failed with response: $json_response.") ; 
+    // watchdog('webform_to_salesforce_example_charitycampaign', "FAILURE ON SUBMISSION! Charity Campaign form failed with response: $json_response.");
+  }
+
+  // Get receipt information and return to donor.
+  $curl_receipt = curl_init();
+
+  curl_setopt_array($curl_receipt, array(
+    CURLOPT_URL => "$url/$charity_campaign_id",
+    CURLOPT_RETURNTRANSFER => TRUE,
+    CURLOPT_ENCODING => "",
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 30,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => "GET",
+    CURLOPT_HTTPHEADER => array(
+      "Accept: */*",
+      "Accept-Encoding: gzip, deflate",
+      "Authorization: Bearer $_webform_to_salesforce_example_salesforce_access_token",
+      "Cache-Control: no-cache",
+      "Connection: keep-alive",
+      "Cookie: inst=APP_22; disco=22:00D22000000CxfQ:005440000094nxp:1; BrowserId=G6VOJ7zJQTC_NPiOs-rBlA",
+      "Host: $_webform_to_salesforce_example_salesforce_instance_host_name",
+      "Postman-Token: 364cbb7a-56fd-439b-b6cb-4831566ee070,2e6bc8e8-10c1-407b-b7f7-09f4ac7a50b3",
+      "User-Agent: PostmanRuntime/7.17.1",
+      "cache-control: no-cache",
+    ),
+  ));
+
+  $response_receipt = curl_exec($curl_receipt);
+  $err_receipt = curl_error($curl_receipt);
+  curl_close($curl_receipt);
+  $response_info = json_decode($response_receipt, TRUE);
+
+  $receipt_value = $response_info['charity_campaign_Donation__c'];
+  $reciept_associate_name = $response_info['Associate_Name_Intranet__c'];
+  $reciept_location = $response_info['Location__c'];
+  $reciept_preferred_agency = $response_info['Preferred_Charity__c'];
+  $reciept_amount = $response_info['Amount__c'];
+  $reciept_donation_type = $response_info['Donation_Type__c'];
+  $reciept_functional_area = $response_info['Functional_Area__c'];
+  if ($err_receipt) {
+    \Drupal::logger('webform_to_salesforce_example_charitycampaign')->notice("ERROR RETRIEVING RECEIPT INFORMATION! Receipt failed with response: $err_receipt") ; 
+    \Drupal::messenger()->addStatus(t("<div>There was an error submitting your donation.<br><br>$err_receipt</div>"));
+  }
+  else {
+    \Drupal::logger('webform_to_salesforce_example_charitycampaign')->notice("RECEIPT VALUES: $response_receipt") ; 
+    \Drupal::messenger()->addStatus(t("<div><img src='https://mysite.com/sites/default/files/logo.png' style='display:block; text-align: center; margin-left: auto; margin-right: auto;'><hr></div><div><span class='label'>Charity Campaign Donation Receipt:</span> $receipt_value<br><span class='label'>Associate Name:</span> $reciept_associate_name<br><span class='label'>Associate Location:</span> $reciept_location<br><span class='label'>Functional Area:</span> $reciept_functional_area<br><span class='label'>Preferred Agency:</span> $reciept_preferred_agency<br><span class='label'>Amount:</span> $reciept_amount<br><span class='label'>Donation Type:</span> $reciept_donation_type</div><div class='disclaimer'><p>A copy of the Receipt has been sent to your email. If you have a problem with your donation, please send an email to <a href='mailto:myemail@mysite.com'>My Email</a>. Please print this Receipt for Tax Purposes.</p></div>"));
+  }
+  if ($donation_type == 'One Time Credit Card via PayPal') {
+    $form_state->setResponse(new TrustedRedirectResponse('https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=123456790ABCDEFG&source=url', 302));
+   // $form_state['redirect'] = 'https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=FESNXUXSEA6RJ&source=url';
+  } 
+}
+
+/**
+ * Fetch the access token.
+ */
+function webform_to_salesforce_example_get_access_token() {
+  $content = NULL;
+  $enviornment = Settings::get('AH_SITE_ENVIRONMENT', ''); 
+  // Get Access Token.
+  if (isset($enviornment)) {
+    switch ($enviornment) {
+      case 'local':
+        $access_url = "https://test.salesforce.com";
+        $host_url = "some-name-here.my.salesforce.com";
+        break;
+
+      case 'dev':
+        $access_url = "https://test.salesforce.com";
+        $host_url = "some-name-here.cs28.my.salesforce.com";
+        break;
+
+      case 'test':
+        $access_url = "https://test.salesforce.com";
+        $host_url = "some-name-here.my.salesforce.com";
+        break;
+
+      case 'prod':
+        $access_url = "https://company-name.my.salesforce.com";
+        $host_url = "some-name-here.my.salesforce.com";
+        break;
+    }
+  }
+
+  $access_curl = curl_init();
+
+  curl_setopt_array($access_curl, array(
+    CURLOPT_URL => $access_url,
+    CURLOPT_RETURNTRANSFER => TRUE,
+    CURLOPT_ENCODING => "",
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 30,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => "POST",
+  ));
+
+  $response = curl_exec($access_curl);
+  $err = curl_error($access_curl);
+
+  curl_close($access_curl);
+
+  if ($err) {
+    echo "cURL Error #:" . $err;
+    $message = 'CRON RUN: There was an error retrieving the access token and instance url. The Salesforce response was $err.';
+    \Drupal::logger('webform_to_salesforce_example_charitycampaign')->error($message);    
+  }
+  else {
+    $access_response = json_decode($response, TRUE);
+
+    global $_webform_to_salesforce_example_salesforce_access_token;
+    $_webform_to_salesforce_example_salesforce_access_token = $access_response['access_token'];
+
+    global $_webform_to_salesforce_example_salesforce_instance_url;
+    $_webform_to_salesforce_example_salesforce_instance_url = $access_response['instance_url'];
+     $message = "CRON RUN: Successfully retrieved access token value $_webform_to_salesforce_example_salesforce_access_token and instance url of $_webform_to_salesforce_example_salesforce_instance_url";
+     \Drupal::logger('webform_to_salesforce_example_charitycampaign')->notice($message);
+    $content['access_token'] = $access_response['access_token'];
+    $content['instance_url'] = $access_response['instance_url'];
+  }
+
+  return $content;
+} 
+
+function webform_to_salesforce_example_associated_order_setup_validate(array $form, FormStateInterface $form_state) {
+  $webform_to_salesforce_example_associate_location = $form_state->getValue('location');
+  if ($webform_to_salesforce_example_associate_location == 'None') {
+    $form_state->setErrorByName('location', $this->t('You must select an location.'));
+  }  
+}
+
+function webform_to_salesforce_example_associated_order_setup_submit(array $form, FormStateInterface $form_state) {
+  $content = NULL;
+  $enviornment = Settings::get('AH_SITE_ENVIRONMENT', ''); 
+  if (isset($enviornment)) {
+    switch ($enviornment) {
+      case 'local':
+        $access_url = "https://test.salesforce.com";
+        $RecordTypeId = "alphanumericavalue";
+        break;
+
+      case 'dev':
+        $access_url = "https://test.salesforce.com";
+        $RecordTypeId = "alphanumericavalue";
+        break;
+
+      case 'test':
+        $access_url = "https://test.salesforce.com";
+        $RecordTypeId = "alphanumericavalue";
+        break;
+
+      case 'prod':
+        $access_url = "https://company.my.salesforce.com";
+        $RecordTypeId = "alphanumericavalue";
+        break;
+    }
+  }
+
+  // Get Access Token.
+  $access_info = webform_to_salesforce_example_get_access_token();
+  $_webform_to_salesforce_example_salesforce_access_token = $access_info['access_token'];
+  $_webform_to_salesforce_example_salesforce_instance_url = $access_info['instance_url'];
+
+  // Check for existing associate account.
+  $account_id_curl = curl_init();
+  $account_network_id = $form_state->getValue('network_id');
+  $account_location_name = $form_state->getValue('location');
+  $account_location_trim = substr($account_location_name, 0, 3);
+  $account_associate_name = $form_state->getValue('associate_name');
+  $account_associate_name_submitted = preg_replace('/\s+/', '+', $account_associate_name);
+
+  curl_setopt_array($account_id_curl, array(
+    //CURLOPT_URL => "$_webform_to_salesforce_example_salesforce_instance_url/services/data/v48.0/query/?q=SELECT+Account_ID__c+FROM+Account+WHERE+AssociateNetworkID__c+=+'$account_network_id'+AND+location_Name_Text__c+=+'$account_location_name'+AND+RecordType.DeveloperName+=+'Account'+AND+AccountSource+=+'Associate+Account'+AND+Account.Account_Type__c+=+'NON'+AND+Account.Name+=+'$account_name'+AND+Account.Status__c+=+'Active'",
+    //CURLOPT_URL => "$_webform_to_salesforce_example_salesforce_instance_url/services/data/v55.0/query/?q=SELECT+Account_ID__c+FROM+Account+WHERE+Account_location__c+=+'056'+AND+RecordType.DeveloperName+=+'Account'+AND+Account.Account_Type__c+=+'NON'+AND+Name+=+'Ronald+Brennan'+AND+Account.Status__c+=+'Active'",
+    // Select the Account ID where the location is the submitted value and the Name is the submitted value.
+    CURLOPT_URL => "$_webform_to_salesforce_example_salesforce_instance_url/services/data/v55.0/query/?q=SELECT+Account_ID__c+FROM+Account+WHERE+Account_location__c+=+'$account_location_trim'+AND+RecordType.DeveloperName+=+'Account'+AND+Account.Account_Type__c+=+'NON'+AND+Name+=+'$account_associate_name_submitted'+AND+Account.Status__c+=+'Active'",
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_ENCODING => "",
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 0,
+    CURLOPT_FOLLOWLOCATION => true,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => "GET",
+    CURLOPT_HTTPHEADER => array(
+      "Authorization: Bearer $_webform_to_salesforce_example_salesforce_access_token",
+      "Cookie: inst=APP_22; disco=22:00D22000000CxfQ:005440000094nxp:1; BrowserId=nj2-pUwsEeq4m0nuP06Mfg"
+    ),
+  ));
+
+  $account_id_json_response = curl_exec($account_id_curl);
+
+  curl_close($account_id_curl);
+
+  $account_id_response = json_decode($account_id_json_response, TRUE);
+  $account_json_id = print_r($account_id_response['records'][0]['Account_ID__c'], TRUE);
+  $account_id = $account_json_id;
+
+  if ($account_id_response['totalSize']) {
+    \Drupal::messenger()->addStatus(t("<h3 style='font-weight: bold;'>Good news $account_associate_name!<br>You already have an account at Operating Site $account_location_trim. Please use the information below to place your order.</h3><p><strong>You account number is: $account_json_id</strong></p>"));
+  } else {
+    // Post order form information to Salesforce.
+    $url = "$_webform_to_salesforce_example_salesforce_instance_url/services/data/v55.0/sobjects/Case";
+    $_webform_to_salesforce_example_salesforce_instance_host_url = parse_url($_webform_to_salesforce_example_salesforce_instance_url);
+    $_webform_to_salesforce_example_salesforce_instance_host_name = $_webform_to_salesforce_example_salesforce_instance_host_url['host'];
+    $order_network_id = $form_state->getValue('network_id');
+
+    $content = json_encode(
+      array(
+        'RecordTypeId' => $RecordTypeId,
+        'Source__c' => 'Intranet',
+        'Associate_Network_Id__c' => $form_state->getValue('network_id'),
+        'Associate_Name__c' => $form_state->getValue('associate_name'),
+        'Email_Address__c' => $form_state->getValue('personal_email_address'),
+        'location_Name_Text__c' => $form_state->getValue('location'),
+        'Phone_Number__c' => $form_state->getValue('associate_cell_number'),
+      )
+    );
+    $curl = curl_init($url);
+    curl_setopt($curl, CURLOPT_HEADER, FALSE);
+    curl_setopt($curl, CURLOPT_RETURNTRANSFER, TRUE);
+    curl_setopt($curl, CURLOPT_HTTPHEADER,
+      array("Authorization: OAuth $_webform_to_salesforce_example_salesforce_access_token",
+        "Content-type: application/json",
+      )
+    );
+    curl_setopt($curl, CURLOPT_POST, TRUE);
+    curl_setopt($curl, CURLOPT_POSTFIELDS, $content);
+
+    $json_response = curl_exec($curl);
+    $order_err = curl_error($curl);
+
+    $status = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+
+    curl_close($curl);
+
+    $order_response = json_decode($json_response, TRUE);
+
+    if ($status == 201) {
+      \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->notice("SUCCESS! $order_network_id submitted the form with response: $json_response.") ;
+    }
+    else {
+      \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->error("FAILURE ON SUBMISSION! Associate Order Form failed with response: $json_response.") ;
+    }
+
+    $case_id = $order_response['id'];
+
+    // Get Case value from submission.
+    $case_curl = curl_init();
+
+    curl_setopt_array($case_curl, array(
+      CURLOPT_URL => "$url/$case_id",
+      CURLOPT_RETURNTRANSFER => true,
+      CURLOPT_ENCODING => "",
+      CURLOPT_MAXREDIRS => 10,
+      CURLOPT_TIMEOUT => 30,
+      CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+      CURLOPT_CUSTOMREQUEST => "GET",
+      CURLOPT_HTTPHEADER => array(
+        "Accept: */*",
+        "Accept-Encoding: gzip, deflate",
+        "Authorization: Bearer $_webform_to_salesforce_example_salesforce_access_token",
+        "Cache-Control: no-cache",
+        "Connection: keep-alive",
+        "Cookie: inst=APP_22; disco=22:00D22000000CxfQ:005440000094nxp:1; BrowserId=G6VOJ7zJQTC_NPiOs-rBlA",
+        "Host: $_webform_to_salesforce_example_salesforce_instance_host_name",
+        "Postman-Token: 040ea8eb-5ee1-44c2-89d2-d10a22a4ca17,e9277206-7ebf-43bf-8239-a00a2ee8375c",
+        "User-Agent: PostmanRuntime/7.17.1",
+        "cache-control: no-cache"
+      ),
+    ));
+
+    $case_response = curl_exec($case_curl);
+    $case_err = curl_error($case_curl);
+
+    curl_close($case_curl);
+    $case_info = json_decode($case_response, TRUE);
+    $casenumber = $case_info['CaseNumber'];
+    $caseid = $case_info['Id'];
+    $caseassid = $case_info['Associate_Network_Id__c'];
+    $caseassname = $case_info['Associate_Name__c'];
+    $newValue = $form_state->getValue('location');
+
+    if ($case_err) {
+      \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->error("CASE NOT CREATED: $err") ;
+    }
+    else {
+      \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->notice("CASE CREATED: $case_response") ;
+    }
+    \Drupal::messenger()->addStatus(t("Thank you $caseassname for completing the New Associate Order SET-UP."));
+  }
+}
+
+function webform_to_salesforce_example_retiree_order_setup_submit(array $form, FormStateInterface $form_state) {
+  $content = NULL;
+  $enviornment = Settings::get('AH_SITE_ENVIRONMENT', '');
+  if (isset($enviornment)) {
+    switch ($enviornment) {
+      case 'local':
+        $access_url = "https://test.salesforce.com";
+        $RecordTypeId = "alphanumericavalue";
+        break;
+
+      case 'dev':
+        $access_url = "https://test.salesforce.com";
+        $RecordTypeId = "alphanumericavalue";
+        break;
+
+      case 'test':
+        $access_url = "https://test.salesforce.com";
+        $RecordTypeId = "alphanumericavalue";
+        break;
+
+      case 'prod':
+        $access_url = "https://company.my.salesforce.com";
+        $RecordTypeId = "alphanumericavalue";
+        break;
+    }
+  }
+
+  // Get Access Token.
+  $access_info = webform_to_salesforce_example_get_access_token();
+  $_webform_to_salesforce_example_salesforce_access_token = $access_info['access_token'];
+  $_webform_to_salesforce_example_salesforce_instance_url = $access_info['instance_url'];
+
+  // Post order form information to Salesforce.
+  $url = "$_webform_to_salesforce_example_salesforce_instance_url/services/data/v55.0/sobjects/Case";
+  $_webform_to_salesforce_example_salesforce_instance_host_url = parse_url($_webform_to_salesforce_example_salesforce_instance_url);
+  $_webform_to_salesforce_example_salesforce_instance_host_name = $_webform_to_salesforce_example_salesforce_instance_host_url['host'];
+  $order_network_id = 'RETR1234';
+
+  $content = json_encode(
+    array(
+      'RecordTypeId' => $RecordTypeId,
+      'Source__c' => 'Intranet',
+      'Retiree_Flag__c' => 1,
+      'Associate_Network_Id__c' => 'RETR1234',
+      'Associate_Name__c' => $form_state->getValue('associate_name'),
+      'Email_Address__c' => $form_state->getValue('personal_email_address'),
+      'location_Name_Text__c' => $form_state->getValue('location'),
+      'Phone_Number__c' => $form_state->getValue('associate_cell_number'),
+    )
+  );
+
+  $curl = curl_init($url);
+  curl_setopt($curl, CURLOPT_HEADER, FALSE);
+  curl_setopt($curl, CURLOPT_RETURNTRANSFER, TRUE);
+  curl_setopt($curl, CURLOPT_HTTPHEADER,
+    array("Authorization: OAuth $_webform_to_salesforce_example_salesforce_access_token",
+      "Content-type: application/json",
+    )
+  );
+  curl_setopt($curl, CURLOPT_POST, TRUE);
+  curl_setopt($curl, CURLOPT_POSTFIELDS, $content);
+
+  $json_response = curl_exec($curl);
+  $order_err = curl_error($curl);
+
+  $status = curl_getinfo($curl, CURLINFO_HTTP_CODE);
+
+  curl_close($curl);
+
+  $order_response = json_decode($json_response, TRUE);
+
+  if ($status == 201) {
+    \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->notice("RETIREE FORM SUCCESS! $order_network_id submitted the form with response: $json_response.") ;
+  }
+  else {
+    \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->error("FAILURE ON SUBMISSION! Retiree Associate Order Form failed with response: $json_response.") ;
+  }
+
+  $case_id = $order_response['id'];
+
+  // Get Case value from submission.
+  $case_curl = curl_init();
+
+  curl_setopt_array($case_curl, array(
+    CURLOPT_URL => "$url/$case_id",
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_ENCODING => "",
+    CURLOPT_MAXREDIRS => 10,
+    CURLOPT_TIMEOUT => 30,
+    CURLOPT_HTTP_VERSION => CURL_HTTP_VERSION_1_1,
+    CURLOPT_CUSTOMREQUEST => "GET",
+    CURLOPT_HTTPHEADER => array(
+      "Accept: */*",
+      "Accept-Encoding: gzip, deflate",
+      "Authorization: Bearer $_webform_to_salesforce_example_salesforce_access_token",
+      "Cache-Control: no-cache",
+      "Connection: keep-alive",
+      "Cookie: inst=APP_22; disco=22:00D22000000CxfQ:005440000094nxp:1; BrowserId=G6VOJ7zJQTC_NPiOs-rBlA",
+      "Host: $_webform_to_salesforce_example_salesforce_instance_host_name",
+      "Postman-Token: 040ea8eb-5ee1-44c2-89d2-d10a22a4ca17,e9277206-7ebf-43bf-8239-a00a2ee8375c",
+      "User-Agent: PostmanRuntime/7.17.1",
+      "cache-control: no-cache"
+    ),
+  ));
+
+  $case_response = curl_exec($case_curl);
+  $case_err = curl_error($case_curl);
+
+  curl_close($case_curl);
+  $case_info = json_decode($case_response, TRUE);
+  $casenumber = $case_info['CaseNumber'];
+  $caseid = $case_info['Id'];
+  $caseassid = $case_info['Associate_Network_Id__c'];
+  $caseassname = $case_info['Associate_Name__c'];
+  $newValue = $form_state->getValue('location');
+
+  if ($case_err) {
+    \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->error("RETIREE CASE NOT CREATED: $err") ;
+  }
+  else {
+    \Drupal::logger(' webform_to_salesforce_example_charitycampaign ')->notice("RETIREE CASE CREATED: $case_response") ;
+  }
+
+  \Drupal::messenger()->addStatus(t("Thank you $caseassname for completing the New Retiree Order SET-UP."));
+}
+
+
+
+/**
+ * Store the access token in cache.
+ */
+function webform_to_salesforce_example_cache() {
+  $data = &drupal_static(__FUNCTION__); // Can be replaced with the `__METHOD__`
+  $cid = 'webform_to_salesforce_example_charitycampaign:' . \Drupal::languageManager()->getCurrentLanguage()->getId();
+
+  if ($cache = \Drupal::cache()->get($cid)) {
+    $data = $cache->data;
+  }
+  else {
+    // This is where you would add your code that will run only
+    // when generating a new cache.
+    $data = webform_to_salesforce_example_get_access_token();
+    \Drupal::cache()->set($cid, $data);
+    \Drupal::state()->set('webform_to_salesforce_example_last_fetch', REQUEST_TIME);
+  }
+  return $data;
+}
+
+
+/**
+ * Implements hook_cron().
+ */
+function webform_to_salesforce_example_cron() {
+  $content = &drupal_static(__FUNCTION__); // Can be replaced with the `__METHOD__`
+  $cid = 'webform_to_salesforce_example_charitycampaign:' . \Drupal::languageManager()->getCurrentLanguage()->getId();
+
+  $cache_duration = \Drupal::state()->get('webform_to_salesforce_example_cache_duration', webform_to_salesforce_example_CACHE_DURATION);
+  $last_run = \Drupal::state()->get('webform_to_salesforce_example_last_fetch', 0);
+  $expire = $last_run + $cache_duration;
+
+  // Expire the content if we're passed the expiration threshhold.
+  if ($expire < REQUEST_TIME) {
+    $content = webform_to_salesforce_example_get_access_token();
+
+    // Only reset content if the feed was fetched.
+    if ($content) {
+      \Drupal::cache()->set($cid, $content);
+      \Drupal::state()->set('webform_to_salesforce_example_last_fetch', REQUEST_TIME);
+    }
+  }
+}

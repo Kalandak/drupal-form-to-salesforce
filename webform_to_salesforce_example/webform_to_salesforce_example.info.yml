@@ -1,0 +1,8 @@
+name: Webform to Salesform Example
+description: Submits a Drupal Webform Data to Salesforce.
+core: 8.x
+package: Code Example
+dependencies:
+  - node
+  - block
+type: module
